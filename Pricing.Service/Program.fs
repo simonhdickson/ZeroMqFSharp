@@ -5,10 +5,10 @@ open Newtonsoft.Json
 open Newtonsoft.Json.FSharp
 
 module Json =
-    let convertFrom v (converters:JsonConverter[]) = 
+    let convertFrom (converters:JsonConverter[]) v = 
         JsonConvert.SerializeObject(v,Formatting.Indented,converters)
 
-    let convertTo v (converters:JsonConverter[]) = 
+    let convertTo (converters:JsonConverter[]) v = 
         JsonConvert.DeserializeObject<'t>(v,converters)
 
 module Zmq =
@@ -18,43 +18,51 @@ module Zmq =
     let recieve (socket:ZmqSocket) =
         socket.Receive Encoding.Unicode
 
-    let publisher (zmqContext:ZmqContext)  addresss =
+    let publisher addresss (zmqContext:ZmqContext) =
         let publisher = zmqContext.CreateSocket(SocketType.PUB)
         publisher.Bind addresss
         publisher
         
-    let subscribe (zmqContext:ZmqContext) addresss =
+    let subscriber addresss (zmqContext:ZmqContext) =
         let subscriber = zmqContext.CreateSocket(SocketType.SUB)
         subscriber.SubscribeAll()
         subscriber.Connect addresss
         subscriber
 
+    let publish converter socket message =
+        let convertedMessage = converter message
+        send convertedMessage socket 
+
+    let subscribe converter socket =
+        async {
+            let message = recieve socket |> converter
+            return message
+        }
+        
 module Weather =
     type State =
     | Sunny
-    | Rain of decimal
+    | Rain of int
 
     type Status =
         { Place: string; Weather:State }
 
-    let startServer createPublisher = 
+    let startServer (publish:Status->unit) = 
         async {
-            use publisher = createPublisher "tcp://*:5556"
-            let randomizer = new Random(DateTime.Now.Millisecond)
+            let amountOfRain = new Random(DateTime.Now.Millisecond)
 
             while true do
-                let next = randomizer.Next(100, 600).ToString()
-                publisher
-                |> Zmq.send next
+                { Place = "Here"; Weather=Rain(amountOfRain.Next(100, 600)) }
+                |> publish
         }
 
-    let startClient createSubscriber =
+    let startClient (recieve:Async<Status>) =
         async {
-            use subscriber = createSubscriber "tcp://localhost:5556"
-
             for i in 1 .. 10 do
-                Zmq.recieve subscriber
-                |> printfn "Recieved %i: %s" i
+                let! message = recieve
+                match message.Weather with
+                | Sunny -> printfn "It is Sunny at %s :)" message.Place
+                | Rain(rain) ->  printfn "Rain is %imm at %s :(" rain message.Place
         }
 
 [<EntryPoint>]
@@ -63,12 +71,14 @@ let main argv =
     use context = ZmqContext.Create()
 
     context
-    |> Zmq.publisher 
+    |> Zmq.publisher "tcp://*:5556"
+    |> Zmq.publish (Json.convertFrom converters)
     |> Weather.startServer
     |> Async.Start
 
     context
-    |> Zmq.subscribe 
+    |> Zmq.subscriber "tcp://localhost:5556"
+    |> Zmq.subscribe (Json.convertTo converters)
     |> Weather.startClient
     |> Async.Start
 
