@@ -21,11 +21,15 @@ module Json =
             cases |> Array.map (fun c -> let nm = union.Name + "+" + c.Name
                                          union.FullName.Replace(union.Name,nm))
 
+        let deserialize (value, valueType) =
+            match valueType with
+            | t when t = typeof<string> -> value :> obj
+            | _ -> JsonConvert.DeserializeObject(value, valueType)
+
         override __.WriteJson(writer,value,serializer) =
             match value with
             | null -> nullArg "value"
             | data -> 
-                let thing = value.GetType()
                 let (caseInfo, values) = FSharpValue.GetUnionFields(data, union)
                 writer.WriteStartObject()
                 writer.WritePropertyName(caseInfo.Name)
@@ -35,19 +39,18 @@ module Json =
                 writer.WriteEndObject()
 
         override __.ReadJson(reader,_,_,serializer) =
-            let thingy = serializer.Deserialize(reader);
-            let jObj = JObject.FromObject(thingy).First :?> JProperty
+            let jObj =
+                serializer.Deserialize reader
+                |> JObject.FromObject
+                |> (fun i -> i.First :?> JProperty)
             let caseInfo = cases |> Seq.find (fun i -> i.Name = jObj.Name.Replace("_",""))
             let caseTypes = caseInfo.GetFields() |> Seq.map (fun i -> i.PropertyType)
             let args =
                 jObj.Value
                 |> Seq.map2 (fun i j -> (j.Value<string>(), i)) caseTypes
-                |> Seq.map (fun (i,iType) -> 
-                    match iType with
-                    | t when t = typeof<string> -> i :> obj
-                    | _ -> JsonConvert.DeserializeObject(i, iType))
+                |> Seq.map deserialize
                 |> Seq.toArray
-            FSharpValue.MakeUnion(caseInfo,args);
+            FSharpValue.MakeUnion(caseInfo,args)
 
         override __.CanConvert(vType) = 
             (vType = union) || 
@@ -95,12 +98,11 @@ module Weather =
             let amountOfRain = new Random(DateTime.Now.Millisecond)
 
             while true do
-                { Place = "Here"; Weather=Rain(amountOfRain.Next(100, 600)) }
-                |> publish
-                { Place = "Here"; Weather=Sunny }
-                |> publish
-                { Place = "Here"; Weather=Fog("Cheese",1.2) }
-                |> publish
+                [|
+                    { Place = "Here"; Weather = Rain (amountOfRain.Next(100, 600)) };
+                    { Place = "There"; Weather = Sunny };
+                    { Place = "Everywhere"; Weather = Fog ("Cheese", 1.2) }
+                |] |> Seq.iter publish
         }
 
     let startClient (recieve:Async<Status>) =
